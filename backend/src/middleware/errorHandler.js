@@ -8,7 +8,12 @@ export function notFoundHandler(req, res) {
 export function errorHandler(error, req, res, next) {
   void next;
   const status = error.status ?? 500;
+  if (status >= 500) {
+    console.error("Unhandled server error:", error.message);
+  }
   res.status(status).json({
-    error: status >= 500 ? "Internal Server Error" : error.message,
+    error: status >= 500
+      ? "Internal Server Error"
+      : (error.message || "Request failed"),
   });
 }
