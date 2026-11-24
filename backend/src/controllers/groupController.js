@@ -31,6 +31,42 @@ function safeInvitation(row) {
   };
 }
 
+export async function listGroupsForProfessor(req, res, next) {
+  try {
+    const result = await pool.query(
+      `SELECT g.id, g.name, g.created_by, g.created_at,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', u.id,
+                    'fullName', u.full_name,
+                    'roleInGroup', gm.role_in_group
+                  )
+                  ORDER BY gm.joined_at ASC
+                ) FILTER (WHERE gm.id IS NOT NULL),
+                '[]'::json
+              ) AS members
+       FROM groups g
+       LEFT JOIN group_members gm ON gm.group_id = g.id
+       LEFT JOIN users u ON u.id = gm.user_id
+       GROUP BY g.id, g.name, g.created_by, g.created_at
+       ORDER BY g.created_at ASC`,
+    );
+
+    res.status(200).json({
+      groups: result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+        members: row.members,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function createGroup(req, res, next) {
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   if (name.length < 2 || name.length > 100) {

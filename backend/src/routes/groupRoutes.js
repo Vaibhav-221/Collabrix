@@ -4,6 +4,7 @@ import {
   getMyGroup,
   inviteStudent,
   listInvitations,
+  listGroupsForProfessor,
   removeMember,
   respondToInvitation,
 } from "../controllers/groupController.js";
@@ -11,10 +12,10 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 export const groupRouter = express.Router();
 
-groupRouter.use(requireAuth, requireRole("student"));
-groupRouter.post("/", createGroup);
-groupRouter.get("/my-group", getMyGroup);
-groupRouter.post("/invite", inviteStudent);
-groupRouter.get("/invitations", listInvitations);
-groupRouter.post("/invitations/:id/respond", respondToInvitation);
-groupRouter.delete("/members/:userId", removeMember);
+groupRouter.post("/", requireAuth, requireRole("student"), createGroup);
+groupRouter.get("/", requireAuth, requireRole("professor"), listGroupsForProfessor);
+groupRouter.get("/my-group", requireAuth, requireRole("student"), getMyGroup);
+groupRouter.post("/invite", requireAuth, requireRole("student"), inviteStudent);
+groupRouter.get("/invitations", requireAuth, requireRole("student"), listInvitations);
+groupRouter.post("/invitations/:id/respond", requireAuth, requireRole("student"), respondToInvitation);
+groupRouter.delete("/members/:userId", requireAuth, requireRole("student"), removeMember);
