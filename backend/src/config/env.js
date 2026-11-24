@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import ms from "ms";
 
 const configDirectory = path.dirname(fileURLToPath(import.meta.url));
 const backendDirectory = path.resolve(configDirectory, "../..");
@@ -34,6 +35,40 @@ function integer(name, fallback) {
   return value;
 }
 
+function validateJwtExpiresIn(value) {
+  const duration = ms(value);
+  if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0) {
+    throw new Error(
+      "JWT_EXPIRES_IN must be a positive supported duration such as 7d, 12h, or 30m",
+    );
+  }
+  return value;
+}
+
+function validateClientUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("CLIENT_URL must be a valid HTTP or HTTPS origin");
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("CLIENT_URL must use HTTP or HTTPS");
+  }
+  if (
+    url.pathname !== "/"
+    || url.search
+    || url.hash
+    || url.username
+    || url.password
+  ) {
+    throw new Error("CLIENT_URL must be an origin without a path, query, hash, or credentials");
+  }
+
+  return url.origin;
+}
+
 const nodeEnv = process.env.NODE_ENV?.trim() || "development";
 const port = integer("PORT", 5000);
 const postgresPort = integer("POSTGRES_PORT", 5432);
@@ -52,6 +87,10 @@ if (postgresHostPort < 1 || postgresHostPort > 65535) {
 const postgresPassword = required("POSTGRES_PASSWORD");
 const jwtSecret = required("JWT_SECRET");
 const professorSeedPassword = required("PROFESSOR_SEED_PASSWORD");
+const jwtExpiresIn = validateJwtExpiresIn(
+  process.env.JWT_EXPIRES_IN?.trim() || "7d",
+);
+const clientUrl = validateClientUrl(required("CLIENT_URL"));
 
 if (postgresPassword === "change_me") {
   throw new Error("POSTGRES_PASSWORD must be changed from the placeholder");
@@ -70,8 +109,8 @@ export const env = Object.freeze({
   nodeEnv,
   port,
   jwtSecret,
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN?.trim() || "7d",
-  clientUrl: process.env.CLIENT_URL?.trim() || "http://localhost:5173",
+  jwtExpiresIn,
+  clientUrl,
   postgres: Object.freeze({
     user: required("POSTGRES_USER"),
     password: postgresPassword,

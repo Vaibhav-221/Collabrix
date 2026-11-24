@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import ms from "ms";
 import { env } from "../config/env.js";
 import { pool } from "../config/db.js";
 
@@ -34,50 +35,52 @@ export function clearAuthCookie(res) {
 }
 
 function getJwtCookieMaxAge(value) {
-  const match = /^(\d+)([dhms])?$/.exec(value);
-  if (!match) {
-    return 7 * 24 * 60 * 60 * 1000;
-  }
-
-  const amount = Number(match[1]);
-  const unit = match[2] || "s";
-  const multipliers = {
-    s: 1000,
-    m: 60 * 1000,
-    h: 60 * 60 * 1000,
-    d: 24 * 60 * 60 * 1000,
-  };
-  return amount * multipliers[unit];
+  const duration = ms(value);
+  return typeof duration === "number" ? duration : 7 * 24 * 60 * 60 * 1000;
 }
 
 export function requireAuth(req, res, next) {
-  const token = req.cookies?.[JWT_COOKIE_NAME];
-  if (!token) {
+  const cookieToken = req.cookies?.[JWT_COOKIE_NAME];
+  const authorization = req.headers.authorization;
+  const bearerMatch =
+    typeof authorization === "string"
+      ? /^Bearer ([^\s]+)$/i.exec(authorization)
+      : null;
+  const bearerToken = bearerMatch?.[1];
+
+  if (!cookieToken && !bearerToken) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
-  try {
-    const payload = jwt.verify(token, env.jwtSecret);
-    if (
-      typeof payload.userId !== "string"
-      || typeof payload.email !== "string"
-      || !["student", "professor"].includes(payload.role)
-    ) {
-      res.status(401).json({ error: "Invalid authentication token" });
-      return;
+  for (const token of [cookieToken, bearerToken]) {
+    if (!token) {
+      continue;
     }
 
-    req.user = {
-      id: payload.userId,
-      email: payload.email,
-      role: payload.role,
-    };
-    next();
-  } catch (error) {
-    void error;
-    res.status(401).json({ error: "Invalid or expired authentication token" });
+    try {
+      const payload = jwt.verify(token, env.jwtSecret);
+      if (
+        typeof payload.userId !== "string"
+        || typeof payload.email !== "string"
+        || !["student", "professor"].includes(payload.role)
+      ) {
+        continue;
+      }
+
+      req.user = {
+        id: payload.userId,
+        email: payload.email,
+        role: payload.role,
+      };
+      next();
+      return;
+    } catch {
+      continue;
+    }
   }
+
+  res.status(401).json({ error: "Invalid or expired authentication token" });
 }
 
 export function requireRole(...allowedRoles) {
