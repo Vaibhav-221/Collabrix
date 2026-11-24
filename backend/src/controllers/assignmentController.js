@@ -38,12 +38,47 @@ function validateDueDate(value) {
     throw httpError(400, "Due date is required");
   }
 
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):?(\d{2}))$/
+      .exec(value);
+  if (!match) {
+    throw httpError(400, "Due date must include an ISO time and timezone");
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] ?? "0");
+  const millisecond = Number((match[7] ?? "").padEnd(3, "0") || "0");
+
+  if (month < 1 || month > 12) {
+    throw httpError(400, "Due date contains an invalid month");
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) {
+    throw httpError(400, "Due date contains an invalid calendar day");
+  }
+  if (hour > 23 || minute > 59 || second > 59 || millisecond > 999) {
+    throw httpError(400, "Due date contains an invalid time");
+  }
+
+  if (match[8] !== "Z") {
+    const offsetHour = Number(match[10]);
+    const offsetMinute = Number(match[11]);
+    if (
+      offsetHour > 14
+      || offsetMinute > 59
+      || (offsetHour === 14 && offsetMinute !== 0)
+    ) {
+      throw httpError(400, "Due date contains an invalid timezone offset");
+    }
+  }
+
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     throw httpError(400, "Due date must be a valid ISO date/time");
-  }
-  if (!/T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(value)) {
-    throw httpError(400, "Due date must include an ISO time and timezone");
   }
   if (parsed.getTime() <= Date.now()) {
     throw httpError(400, "Due date must be in the future");
@@ -122,6 +157,25 @@ function safeAssignment(row) {
   };
 }
 
+function safeAssignmentWithSubmission(row) {
+  const assignment = safeAssignment(row);
+  const status = row.submission_id ? row.submission_status : "not_started";
+  return {
+    ...assignment,
+    submission: {
+      status,
+      submissionId: row.submission_id ?? null,
+      stepOneAcknowledgedAt: row.step_one_acknowledged_at ?? null,
+      confirmedAt: row.confirmed_at ?? null,
+      confirmedBy: row.confirmed_by ?? null,
+      isLate:
+        status === "confirmed"
+        && row.confirmed_at
+        && new Date(row.confirmed_at) > new Date(row.due_date),
+    },
+  };
+}
+
 async function requireDatabaseProfessor(client, userId) {
   const result = await client.query(
     "SELECT id, role FROM users WHERE id = $1",
@@ -160,6 +214,7 @@ async function getAssignmentTargets(client, assignmentId) {
 
 export async function createAssignment(req, res, next) {
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query("BEGIN");
     await requireDatabaseProfessor(client, req.user.id);
@@ -195,16 +250,26 @@ export async function createAssignment(req, res, next) {
       );
     }
 
+    const targetGroups = await getAssignmentTargets(client, assignment.id);
     await client.query("COMMIT");
+    committed = true;
     res.status(201).json({
       assignment: {
         ...safeAssignment(assignment),
-        targetGroups: await getAssignmentTargets(pool, assignment.id),
+        targetGroups,
       },
     });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    next(error);
+    if (!committed) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+    if (error.code === "23503") {
+      next(httpError(400, "One or more target groups are invalid"));
+    } else if (error.code === "23505") {
+      next(httpError(409, "Duplicate assignment target"));
+    } else {
+      next(error);
+    }
   } finally {
     client.release();
   }
@@ -261,21 +326,33 @@ export async function listAssignments(req, res, next) {
 
     const groupId = membership.rows[0].group_id;
     const result = await pool.query(
-      `SELECT DISTINCT a.*
+      `SELECT DISTINCT
+         a.*,
+         s.id AS submission_id,
+         s.status AS submission_status,
+         s.step_one_acknowledged_at,
+         s.confirmed_at,
+         s.confirmed_by
        FROM assignments a
-       WHERE a.target_type = 'all'
+       LEFT JOIN submissions s
+         ON s.assignment_id = a.id
+        AND s.group_id = $1
+       WHERE a.is_archived = false
+         AND (
+           a.target_type = 'all'
           OR EXISTS (
             SELECT 1
             FROM assignment_targets at
             WHERE at.assignment_id = a.id
               AND at.group_id = $1
           )
+         )
        ORDER BY a.due_date ASC`,
       [groupId],
     );
 
     res.status(200).json({
-      assignments: result.rows.map(safeAssignment),
+      assignments: result.rows.map(safeAssignmentWithSubmission),
     });
   } catch (error) {
     next(error);
@@ -313,10 +390,20 @@ export async function getAssignment(req, res, next) {
     }
 
     const result = await pool.query(
-      `SELECT DISTINCT a.*
+      `SELECT DISTINCT
+         a.*,
+         s.id AS submission_id,
+         s.status AS submission_status,
+         s.step_one_acknowledged_at,
+         s.confirmed_at,
+         s.confirmed_by
        FROM assignments a
        JOIN group_members gm ON gm.user_id = $1
+       LEFT JOIN submissions s
+         ON s.assignment_id = a.id
+        AND s.group_id = gm.group_id
        WHERE a.id = $2
+         AND a.is_archived = false
          AND (
            a.target_type = 'all'
            OR EXISTS (
@@ -333,7 +420,7 @@ export async function getAssignment(req, res, next) {
     }
 
     res.status(200).json({
-      assignment: safeAssignment(result.rows[0]),
+      assignment: safeAssignmentWithSubmission(result.rows[0]),
     });
   } catch (error) {
     next(error);
@@ -344,6 +431,7 @@ export async function updateAssignment(req, res, next) {
   validateUuid(req.params.id, "Assignment ID");
 
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query("BEGIN");
     await requireDatabaseProfessor(client, req.user.id);
@@ -356,6 +444,9 @@ export async function updateAssignment(req, res, next) {
       throw httpError(404, "Assignment not found");
     }
     const existing = assignmentResult.rows[0];
+    if (existing.is_archived) {
+      throw httpError(409, "Archived assignments cannot be edited");
+    }
 
     if (!req.body || Object.keys(req.body).length === 0) {
       throw httpError(400, "At least one assignment field is required");
@@ -437,17 +528,27 @@ export async function updateAssignment(req, res, next) {
       "SELECT * FROM assignments WHERE id = $1",
       [existing.id],
     );
+    const targetGroups = await getAssignmentTargets(client, existing.id);
     await client.query("COMMIT");
+    committed = true;
 
     res.status(200).json({
       assignment: {
         ...safeAssignment(updated.rows[0]),
-        targetGroups: await getAssignmentTargets(pool, existing.id),
+        targetGroups,
       },
     });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    next(error);
+    if (!committed) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+    if (error.code === "23503") {
+      next(httpError(400, "One or more target groups are invalid"));
+    } else if (error.code === "23505") {
+      next(httpError(409, "Duplicate assignment target"));
+    } else {
+      next(error);
+    }
   } finally {
     client.release();
   }
@@ -457,9 +558,18 @@ export async function archiveAssignment(req, res, next) {
   validateUuid(req.params.id, "Assignment ID");
 
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query("BEGIN");
     await requireDatabaseProfessor(client, req.user.id);
+
+    const existing = await client.query(
+      "SELECT id FROM assignments WHERE id = $1 FOR UPDATE",
+      [req.params.id],
+    );
+    if (existing.rows.length === 0) {
+      throw httpError(404, "Assignment not found");
+    }
 
     const result = await client.query(
       `UPDATE assignments
@@ -473,11 +583,14 @@ export async function archiveAssignment(req, res, next) {
     }
 
     await client.query("COMMIT");
+    committed = true;
     res.status(200).json({
       assignment: safeAssignment(result.rows[0]),
     });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!committed) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
     next(error);
   } finally {
     client.release();

@@ -9,6 +9,7 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/authRoutes.js";
 import { groupRouter } from "./routes/groupRoutes.js";
 import { assignmentRouter } from "./routes/assignmentRoutes.js";
+import { submissionRouter } from "./routes/submissionRoutes.js";
 
 export const app = express();
 
@@ -23,6 +24,7 @@ app.use(cookieParser());
 app.use("/api/auth", authRouter);
 app.use("/api/groups", groupRouter);
 app.use("/api/assignments", assignmentRouter);
+app.use("/api/admin/assignments", submissionRouter);
 
 app.get("/api/health", async (req, res) => {
   try {
