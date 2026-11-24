@@ -14,6 +14,25 @@ async function applySchema(client) {
   console.log("Database schema initialized.");
 }
 
+async function applyPhase3Migrations(client) {
+  const migrationDirectory = path.join(dbDirectory, "migrations");
+  const migrationFiles = (await fs.readdir(migrationDirectory))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+
+  for (const migrationFile of migrationFiles) {
+    const migration = await fs.readFile(
+      path.join(migrationDirectory, migrationFile),
+      "utf8",
+    );
+    await client.query(migration);
+  }
+
+  if (migrationFiles.length > 0) {
+    console.log("Database migrations initialized.");
+  }
+}
+
 async function applySeed(client) {
   const seed = await fs.readFile(path.join(dbDirectory, "seed.sql"), "utf8");
   const existing = await client.query(
@@ -76,6 +95,7 @@ async function main() {
 
     if (!seedOnly) {
       await applySchema(client);
+      await applyPhase3Migrations(client);
     }
     await applySeed(client);
 
