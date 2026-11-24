@@ -9,4 +9,8 @@ backend/node_modules/
 npm-debug.log*
 coverage/
 dist/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 .DS_Store
